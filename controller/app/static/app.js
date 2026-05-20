@@ -1,6 +1,12 @@
 let cy;
 let currentState = null;
 let wsHeartbeat = null;
+let autoLayoutEnabled = false;
+let hasInitialLayout = false;
+let lastTopologyHash = "";
+
+const POSITION_STORAGE_KEY = "mtd-demo-graph-positions-v2";
+const savedPositions = new Map();
 
 const metricsEl = document.getElementById("metrics");
 const nodeListEl = document.getElementById("nodeList");
@@ -13,6 +19,8 @@ const probeBtn = document.getElementById("probeBtn");
 const addUserBtn = document.getElementById("addUserBtn");
 const connectUserBtn = document.getElementById("connectUserBtn");
 const newUserInput = document.getElementById("newUserInput");
+const relayoutBtn = document.getElementById("relayoutBtn");
+const layoutModeBtn = document.getElementById("layoutModeBtn");
 
 function formatTime(ts) {
   try {
@@ -20,6 +28,48 @@ function formatTime(ts) {
   } catch {
     return ts;
   }
+}
+
+function restoreSavedPositions() {
+  try {
+    const raw = localStorage.getItem(POSITION_STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+    const payload = JSON.parse(raw);
+    if (typeof payload !== "object" || payload === null) {
+      return;
+    }
+
+    Object.entries(payload).forEach(([id, pos]) => {
+      if (
+        pos &&
+        typeof pos === "object" &&
+        typeof pos.x === "number" &&
+        typeof pos.y === "number"
+      ) {
+        savedPositions.set(id, { x: pos.x, y: pos.y });
+      }
+    });
+  } catch {
+    // Ignore invalid cached layout data.
+  }
+}
+
+function persistSavedPositions() {
+  const payload = {};
+  savedPositions.forEach((pos, id) => {
+    payload[id] = { x: pos.x, y: pos.y };
+  });
+  localStorage.setItem(POSITION_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function rememberNodePosition(node) {
+  const id = node.id();
+  savedPositions.set(id, {
+    x: node.position("x"),
+    y: node.position("y"),
+  });
 }
 
 function renderMetrics(metrics) {
@@ -49,10 +99,11 @@ function renderMetrics(metrics) {
 function renderNodeList(nodes) {
   nodeListEl.innerHTML = nodes
     .map((node) => {
+      const usage = `${node.total_assignments ?? 0} uses`;
       return `
       <article class="node-item ${node.status}">
         <div><strong>${node.node_id}</strong> · ${node.status}</div>
-        <div class="node-meta">last_seen ${formatTime(node.last_seen)}</div>
+        <div class="node-meta">assigned ${usage} · last_seen ${formatTime(node.last_seen)}</div>
       </article>
       `;
     })
@@ -79,14 +130,35 @@ function renderUserSelect(users) {
   userSelectEl.innerHTML = users
     .map((user) => `<option value="${user.user_id}">${user.user_id}</option>`)
     .join("");
-  if (selected && users.some((u) => u.user_id === selected)) {
+  if (selected && users.some((user) => user.user_id === selected)) {
     userSelectEl.value = selected;
   }
 }
 
-function buildGraphElements(state) {
-  const elements = [];
+function computeDefaultPosition(descriptor, totals) {
+  const width = cy ? cy.width() : 980;
+  const height = cy ? cy.height() : 560;
 
+  if (descriptor.type === "user") {
+    const step = totals.userCount > 1 ? (height - 120) / (totals.userCount - 1) : 0;
+    return { x: width * 0.13, y: 60 + descriptor.index * step };
+  }
+
+  if (descriptor.type === "node") {
+    const rows = Math.max(1, Math.ceil(totals.nodeCount / 2));
+    const col = Math.floor(descriptor.index / rows);
+    const row = descriptor.index % rows;
+    const step = rows > 1 ? (height - 150) / (rows - 1) : 0;
+    return {
+      x: width * (0.47 + col * 0.16),
+      y: 75 + row * step,
+    };
+  }
+
+  return { x: width * 0.88, y: height * 0.5 };
+}
+
+function buildGraphModel(state) {
   const activeEntries = new Set(
     state.users.map((user) => user.entry_node).filter(Boolean)
   );
@@ -94,16 +166,36 @@ function buildGraphElements(state) {
     state.users.map((user) => user.relay_node).filter(Boolean)
   );
 
-  const users = state.users;
-  users.forEach((user, index) => {
-    elements.push({
-      data: { id: user.user_id, label: user.user_id, type: "user" },
-      position: { x: 90, y: 90 + index * 80 },
+  const userList = [...state.users].sort((a, b) =>
+    a.user_id.localeCompare(b.user_id)
+  );
+  const nodeList = [...state.nodes].sort((a, b) =>
+    a.node_id.localeCompare(b.node_id)
+  );
+
+  const totals = {
+    userCount: Math.max(1, userList.length),
+    nodeCount: Math.max(1, nodeList.length),
+  };
+
+  const nodes = [];
+
+  userList.forEach((user, index) => {
+    nodes.push({
+      id: user.user_id,
+      label: user.user_id,
+      type: "user",
+      status: "user",
+      index,
+      classes: "user-node",
+      defaultPosition: computeDefaultPosition(
+        { type: "user", index },
+        totals
+      ),
     });
   });
 
-  const nodes = [...state.nodes].sort((a, b) => a.node_id.localeCompare(b.node_id));
-  nodes.forEach((node, index) => {
+  nodeList.forEach((node, index) => {
     const classes = [node.status];
     if (activeEntries.has(node.node_id)) {
       classes.push("active-entry");
@@ -112,36 +204,44 @@ function buildGraphElements(state) {
       classes.push("active-relay");
     }
 
-    elements.push({
-      data: {
-        id: node.node_id,
-        label: node.node_id,
-        type: "node",
-        status: node.status,
-      },
+    nodes.push({
+      id: node.node_id,
+      label: node.node_id,
+      type: "node",
+      status: node.status,
+      index,
       classes: classes.join(" "),
-      position: { x: 360, y: 60 + index * 52 },
+      defaultPosition: computeDefaultPosition(
+        { type: "node", index },
+        totals
+      ),
     });
   });
 
-  elements.push({
-    data: { id: "internet", label: "Internet", type: "internet" },
-    position: { x: 640, y: 310 },
+  nodes.push({
+    id: "internet",
+    label: "Internet",
+    type: "internet",
+    status: "internet",
+    index: 0,
+    classes: "internet-node",
+    defaultPosition: computeDefaultPosition(
+      { type: "internet", index: 0 },
+      totals
+    ),
   });
 
-  state.edges.forEach((edge, index) => {
-    elements.push({
-      data: {
-        id: `${edge.kind}-${edge.user_id}-${index}`,
-        source: edge.source,
-        target: edge.target,
-        kind: edge.kind,
-      },
+  const edges = state.edges.map((edge) => {
+    return {
+      id: `${edge.kind}:${edge.user_id}:${edge.source}:${edge.target}`,
+      source: edge.source,
+      target: edge.target,
+      kind: edge.kind,
       classes: edge.kind,
-    });
+    };
   });
 
-  return elements;
+  return { nodes, edges };
 }
 
 function ensureGraph() {
@@ -152,43 +252,50 @@ function ensureGraph() {
   cy = cytoscape({
     container: document.getElementById("graph"),
     elements: [],
+    minZoom: 0.5,
+    maxZoom: 2.2,
+    wheelSensitivity: 0.16,
     style: [
       {
         selector: "node",
         style: {
           label: "data(label)",
           "font-family": "IBM Plex Mono",
-          "font-size": 10,
+          "font-size": 11,
           "text-valign": "center",
           "text-halign": "center",
+          "text-wrap": "ellipsis",
+          "text-max-width": 72,
           color: "#0f2e23",
-          width: 42,
-          height: 42,
-          "background-color": "#95b6a9",
-          "border-width": 2,
-          "border-color": "#527567",
+          width: 58,
+          height: 58,
+          "background-color": "#9ab7ac",
+          "border-width": 3,
+          "border-color": "#56796b",
         },
       },
       {
-        selector: "node[type = 'user']",
+        selector: "node.user-node",
         style: {
           shape: "round-rectangle",
-          width: 86,
-          height: 36,
+          width: 108,
+          height: 42,
           "background-color": "#1f6feb",
           "border-color": "#1759bc",
           color: "#f5fbff",
+          "font-size": 12,
         },
       },
       {
-        selector: "node[type = 'internet']",
+        selector: "node.internet-node",
         style: {
           shape: "diamond",
-          width: 80,
-          height: 80,
-          "background-color": "#ffe8cf",
-          "border-color": "#ce8f4f",
+          width: 96,
+          height: 96,
+          "background-color": "#ffe9cc",
+          "border-color": "#c78947",
           color: "#5d3a16",
+          "font-size": 13,
         },
       },
       {
@@ -210,32 +317,33 @@ function ensureGraph() {
       {
         selector: "node.active-entry",
         style: {
-          "border-width": 4,
+          "border-width": 5,
           "border-color": "#1f6feb",
         },
       },
       {
         selector: "node.active-relay",
         style: {
-          "overlay-padding": 6,
+          "overlay-padding": 8,
           "overlay-color": "#d97a2b",
-          "overlay-opacity": 0.15,
+          "overlay-opacity": 0.2,
         },
       },
       {
         selector: "edge",
         style: {
-          width: 2,
+          width: 2.5,
           "curve-style": "bezier",
           "target-arrow-shape": "triangle",
           "target-arrow-color": "#5a8374",
           "line-color": "#5a8374",
-          opacity: 0.78,
+          opacity: 0.85,
         },
       },
       {
         selector: "edge.user_to_entry",
         style: {
+          width: 2.8,
           "line-color": "#1f6feb",
           "target-arrow-color": "#1f6feb",
         },
@@ -243,6 +351,7 @@ function ensureGraph() {
       {
         selector: "edge.entry_to_relay",
         style: {
+          width: 2.5,
           "line-color": "#0a7f5a",
           "target-arrow-color": "#0a7f5a",
         },
@@ -250,6 +359,7 @@ function ensureGraph() {
       {
         selector: "edge.relay_to_internet",
         style: {
+          width: 2.5,
           "line-color": "#d97a2b",
           "target-arrow-color": "#d97a2b",
           "line-style": "dashed",
@@ -257,13 +367,129 @@ function ensureGraph() {
       },
     ],
   });
+
+  cy.on("dragfree", "node", (event) => {
+    rememberNodePosition(event.target);
+    persistSavedPositions();
+  });
 }
 
-function renderGraph(state) {
+function runAutoLayout({ fit }) {
+  if (!cy) {
+    return;
+  }
+
+  cy.layout({
+    name: "breadthfirst",
+    directed: true,
+    direction: "rightward",
+    padding: 30,
+    spacingFactor: 1.35,
+    fit,
+    animate: false,
+  }).run();
+
+  cy.nodes().forEach((node) => rememberNodePosition(node));
+  persistSavedPositions();
+}
+
+function syncGraph(state) {
   ensureGraph();
-  cy.elements().remove();
-  cy.add(buildGraphElements(state));
-  cy.layout({ name: "preset", fit: true, padding: 24 }).run();
+  const model = buildGraphModel(state);
+
+  const desiredNodeIds = new Set(model.nodes.map((node) => node.id));
+  const desiredEdgeIds = new Set(model.edges.map((edge) => edge.id));
+
+  cy.batch(() => {
+    cy.edges().forEach((edge) => {
+      if (!desiredEdgeIds.has(edge.id())) {
+        edge.remove();
+      }
+    });
+
+    cy.nodes().forEach((node) => {
+      if (!desiredNodeIds.has(node.id())) {
+        savedPositions.delete(node.id());
+        node.remove();
+      }
+    });
+
+    model.nodes.forEach((descriptor) => {
+      const existing = cy.getElementById(descriptor.id);
+      if (existing.length === 0) {
+        const pos = savedPositions.get(descriptor.id) || descriptor.defaultPosition;
+        cy.add({
+          group: "nodes",
+          data: {
+            id: descriptor.id,
+            label: descriptor.label,
+            type: descriptor.type,
+            status: descriptor.status,
+          },
+          classes: descriptor.classes,
+          position: pos,
+        });
+      } else {
+        existing.data({
+          label: descriptor.label,
+          type: descriptor.type,
+          status: descriptor.status,
+        });
+        existing.classes(descriptor.classes);
+      }
+    });
+
+    model.edges.forEach((descriptor) => {
+      const existing = cy.getElementById(descriptor.id);
+      if (existing.length === 0) {
+        cy.add({
+          group: "edges",
+          data: {
+            id: descriptor.id,
+            source: descriptor.source,
+            target: descriptor.target,
+            kind: descriptor.kind,
+          },
+          classes: descriptor.classes,
+        });
+      } else {
+        existing.data({
+          source: descriptor.source,
+          target: descriptor.target,
+          kind: descriptor.kind,
+        });
+        existing.classes(descriptor.classes);
+      }
+    });
+  });
+
+  if (!hasInitialLayout) {
+    runAutoLayout({ fit: true });
+    hasInitialLayout = true;
+    return;
+  }
+
+  if (autoLayoutEnabled) {
+    const topologyHash = JSON.stringify({
+      nodeStatus: state.nodes
+        .map((node) => `${node.node_id}:${node.status}`)
+        .sort(),
+      edges: state.edges
+        .map((edge) => `${edge.source}>${edge.target}:${edge.kind}:${edge.user_id}`)
+        .sort(),
+      users: state.users.map((user) => user.user_id).sort(),
+    });
+
+    if (topologyHash !== lastTopologyHash) {
+      runAutoLayout({ fit: false });
+      lastTopologyHash = topologyHash;
+    }
+  }
+}
+
+function setLayoutModeButtonLabel() {
+  layoutModeBtn.textContent = `Auto Layout: ${autoLayoutEnabled ? "ON" : "OFF"}`;
+  layoutModeBtn.classList.toggle("ghost", !autoLayoutEnabled);
 }
 
 function applyState(state, reason = "update") {
@@ -272,7 +498,7 @@ function applyState(state, reason = "update") {
   renderNodeList(state.nodes);
   renderEvents(state.events);
   renderUserSelect(state.users);
-  renderGraph(state);
+  syncGraph(state);
 
   const lastRotation = formatTime(state.last_rotation_at);
   metaLineEl.textContent = `Reason: ${reason} · Rotation every ${state.rotation_interval_seconds}s · Last rotation ${lastRotation}`;
@@ -355,6 +581,15 @@ probeBtn.addEventListener("click", async () => {
   }
 });
 
+relayoutBtn.addEventListener("click", () => {
+  runAutoLayout({ fit: true });
+});
+
+layoutModeBtn.addEventListener("click", () => {
+  autoLayoutEnabled = !autoLayoutEnabled;
+  setLayoutModeButtonLabel();
+});
+
 addUserBtn.addEventListener("click", async () => {
   const userId = newUserInput.value.trim();
   if (!userId) {
@@ -416,6 +651,8 @@ nodeListEl.addEventListener("click", async (event) => {
 });
 
 (async function init() {
+  restoreSavedPositions();
+  setLayoutModeButtonLabel();
   await loadInitialState();
   connectWebSocket();
 })();

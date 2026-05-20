@@ -68,6 +68,11 @@ class MTDEngine:
         self.started_at = utc_now()
         self.last_rotation_at = utc_now()
 
+        self._node_usage: dict[str, dict[str, int]] = {
+            node_id: {"entry": 0, "relay": 0}
+            for node_id in self.nodes
+        }
+
         self._rng = random.Random()
         self._lock = asyncio.Lock()
 
@@ -109,6 +114,17 @@ class MTDEngine:
             if node.status == "healthy"
         ]
 
+    def _node_total_usage_locked(self, node_id: str) -> int:
+        usage = self._node_usage.get(node_id, {"entry": 0, "relay": 0})
+        return usage["entry"] + usage["relay"]
+
+    def _mark_node_used_locked(self, node_id: str, usage_type: str) -> None:
+        if node_id not in self._node_usage:
+            self._node_usage[node_id] = {"entry": 0, "relay": 0}
+        if usage_type not in {"entry", "relay"}:
+            return
+        self._node_usage[node_id][usage_type] += 1
+
     def _pick_node_locked(self, exclude: set[str] | None = None) -> str | None:
         exclude = exclude or set()
         candidates = [
@@ -116,7 +132,14 @@ class MTDEngine:
         ]
         if not candidates:
             return None
-        return self._rng.choice(candidates)
+
+        min_usage = min(self._node_total_usage_locked(node_id) for node_id in candidates)
+        least_used = [
+            node_id
+            for node_id in candidates
+            if self._node_total_usage_locked(node_id) == min_usage
+        ]
+        return self._rng.choice(least_used)
 
     def _assign_entry_locked(self, user: UserRecord, trigger: str) -> bool:
         old_entry = user.entry_node
@@ -130,6 +153,7 @@ class MTDEngine:
             return False
 
         user.entry_node = candidate
+        self._mark_node_used_locked(candidate, usage_type="entry")
         user.last_entry_rotation = utc_now_iso()
         user.relay_node = None
         self.total_rotations += 1
@@ -154,6 +178,7 @@ class MTDEngine:
             return False
 
         user.relay_node = relay
+        self._mark_node_used_locked(relay, usage_type="relay")
         user.last_connection = utc_now_iso()
         self.total_connections += 1
         self._emit_event_locked(
@@ -304,7 +329,14 @@ class MTDEngine:
 
     async def snapshot(self) -> dict[str, Any]:
         async with self._lock:
-            nodes = [asdict(node) for node in self.nodes.values()]
+            nodes: list[dict[str, Any]] = []
+            for node in self.nodes.values():
+                row = asdict(node)
+                usage = self._node_usage.get(node.node_id, {"entry": 0, "relay": 0})
+                row["entry_assignments"] = usage["entry"]
+                row["relay_assignments"] = usage["relay"]
+                row["total_assignments"] = usage["entry"] + usage["relay"]
+                nodes.append(row)
             users = [asdict(user) for user in self.users.values()]
 
             edges: list[dict[str, Any]] = []

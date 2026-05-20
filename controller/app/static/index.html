@@ -23,6 +23,8 @@
         <div class="controls">
           <button id="rotateBtn">Force Rotation</button>
           <button id="probeBtn">Probe Nodes</button>
+          <button id="relayoutBtn">Re-layout Graph</button>
+          <button id="layoutModeBtn" class="ghost">Auto Layout: OFF</button>
         </div>
       </header>
 
@@ -32,6 +34,9 @@
         <div class="graph-card card">
           <h2>Network Graph</h2>
           <div id="graph"></div>
+          <p class="graph-hint">
+            Drag nodes freely. Layout reset is disabled by default, so your manual positions stay.
+          </p>
           <div class="legend">
             <span><i class="dot healthy"></i>Healthy</span>
             <span><i class="dot compromised"></i>Compromised</span>
