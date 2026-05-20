@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MTD Network Demo Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <main class="page">
+      <header class="header">
+        <div>
+          <h1>Moving Target Defense Demo</h1>
+          <p id="metaLine">Initializing...</p>
+        </div>
+        <div class="controls">
+          <button id="rotateBtn">Force Rotation</button>
+          <button id="probeBtn">Probe Nodes</button>
+        </div>
+      </header>
+
+      <section class="metrics" id="metrics"></section>
+
+      <section class="workspace">
+        <div class="graph-card card">
+          <h2>Network Graph</h2>
+          <div id="graph"></div>
+          <div class="legend">
+            <span><i class="dot healthy"></i>Healthy</span>
+            <span><i class="dot compromised"></i>Compromised</span>
+            <span><i class="dot unreachable"></i>Unreachable</span>
+            <span><i class="dot entry"></i>Active Entry</span>
+            <span><i class="dot relay"></i>Active Relay</span>
+          </div>
+        </div>
+
+        <aside class="side-panel">
+          <div class="card action-card">
+            <h2>User Actions</h2>
+            <div class="row">
+              <input type="text" id="newUserInput" placeholder="new-user-id" />
+              <button id="addUserBtn">Add User</button>
+            </div>
+            <div class="row">
+              <select id="userSelect"></select>
+              <button id="connectUserBtn">Connect User</button>
+            </div>
+          </div>
+
+          <div class="card node-card">
+            <h2>Nodes</h2>
+            <div id="nodeList" class="list"></div>
+          </div>
+
+          <div class="card events-card">
+            <h2>Event Timeline</h2>
+            <div id="events" class="events"></div>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.33.1/cytoscape.min.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

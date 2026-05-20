@@ -1,0 +1,76 @@
+services:
+  controller:
+    build:
+      context: ./controller
+    container_name: mtd-controller
+    ports:
+      - "8000:8000"
+    environment:
+      NODE_URLS: "http://node-01:9000,http://node-02:9000,http://node-03:9000,http://node-04:9000,http://node-05:9000,http://node-06:9000,http://node-07:9000,http://node-08:9000,http://node-09:9000,http://node-10:9000"
+      ROTATION_INTERVAL_SECONDS: "${ROTATION_INTERVAL_SECONDS:-60}"
+      TRAFFIC_INTERVAL_SECONDS: "${TRAFFIC_INTERVAL_SECONDS:-6}"
+      HEALTHCHECK_INTERVAL_SECONDS: "${HEALTHCHECK_INTERVAL_SECONDS:-5}"
+      DEFAULT_USERS: "${DEFAULT_USERS:-user-01,user-02,user-03,user-04}"
+      EVENT_BUFFER_SIZE: "${EVENT_BUFFER_SIZE:-300}"
+    depends_on:
+      - node-01
+      - node-02
+      - node-03
+      - node-04
+      - node-05
+      - node-06
+      - node-07
+      - node-08
+      - node-09
+      - node-10
+
+  node-01:
+    build:
+      context: ./node_service
+    environment:
+      NODE_ID: node-01
+  node-02:
+    build:
+      context: ./node_service
+    environment:
+      NODE_ID: node-02
+  node-03:
+    build:
+      context: ./node_service
+    environment:
+      NODE_ID: node-03
+  node-04:
+    build:
+      context: ./node_service
+    environment:
+      NODE_ID: node-04
+  node-05:
+    build:
+      context: ./node_service
+    environment:
+      NODE_ID: node-05
+  node-06:
+    build:
+      context: ./node_service
+    environment:
+      NODE_ID: node-06
+  node-07:
+    build:
+      context: ./node_service
+    environment:
+      NODE_ID: node-07
+  node-08:
+    build:
+      context: ./node_service
+    environment:
+      NODE_ID: node-08
+  node-09:
+    build:
+      context: ./node_service
+    environment:
+      NODE_ID: node-09
+  node-10:
+    build:
+      context: ./node_service
+    environment:
+      NODE_ID: node-10
